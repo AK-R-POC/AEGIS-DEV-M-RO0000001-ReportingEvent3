@@ -98,3 +98,88 @@ jobs:
           fi
 
           echo "✅ Packages.Source check OK (No local packages)"
+          
+      - name: Validate each package Repository field
+        run: |
+          # 厳格モード: エラー時は即終了
+          set -euo pipefail
+
+          ALLOWED_PREFIX="https://aegisrspm."
+
+          # ---------------------------------------------------
+          # 6. 各パッケージの Repository フィールドの検証
+          #    以下をすべてエラーとする:
+          #    a) Source が "Repository" 以外（GitHub, Local 等）
+          #    b) Repository フィールドが存在しない
+          #    c) Repository の値が Repositories の Name に存在しない
+          #    d) Repository の値が Name に存在するが、対応する URL が許可プレフィックスでない
+          # ---------------------------------------------------
+          # 許可されたリポジトリ名一覧を取得
+          # （Repositories 内で URL が許可プレフィックスで始まるもののみ）
+          ALLOWED_REPO_NAMES_JSON=$(jq -c --arg prefix "$ALLOWED_PREFIX" \
+            '[.R.Repositories[] | select(.URL | startswith($prefix)) | .Name]' renv.lock)
+
+          echo "📋 Allowed repository names: $ALLOWED_REPO_NAMES_JSON"
+
+          # パッケージが存在しない場合はスキップ
+          PKG_COUNT=$(jq '.Packages // {} | length' renv.lock)
+          if [ "$PKG_COUNT" -eq 0 ]; then
+            echo "✅ No packages to validate."
+            exit 0
+          fi
+
+          echo "🔍 Validating $PKG_COUNT packages..."
+
+          # チェック除外対象パッケージ
+          EXCLUDE_PACKAGES='["renv"]'
+
+          HAS_ERROR=0
+
+          # ---------------------------------------------------
+          # 6-a. Source が "Repository" 以外のパッケージを検出
+          #      （Local は Step5 で検出済みだが、GitHub 等もここで検出）
+          # ---------------------------------------------------
+          NON_REPO_PACKAGES=$(jq -r '
+            [.Packages // {} | to_entries[] |
+              select(.value.Source != "Repository") |
+              "\(.key) (Source: \(.value.Source // "N/A"))"
+            ] | join("\n")' renv.lock)
+
+          if [ -n "$NON_REPO_PACKAGES" ]; then
+            echo "::error::以下のパッケージは Source が 'Repository' ではありません:"
+            echo "$NON_REPO_PACKAGES" | while IFS= read -r line; do
+              echo "::error::  - $line"
+            done
+            HAS_ERROR=1
+          fi
+
+          # ---------------------------------------------------
+          # 6-b. Repository フィールドが許可済み Name に含まれないパッケージを検出
+          #      （URL直書き、未定義Name、許可外URL のName すべてを捕捉）
+          # ---------------------------------------------------
+          INVALID_REPO_PACKAGES=$(jq -r --argjson allowed "$ALLOWED_REPO_NAMES_JSON" --argjson exclude "$EXCLUDE_PACKAGES" '
+            [.Packages // {} | to_entries[] |
+              select(.key | IN($exclude[]) | not) |
+              select(.value.Source == "Repository") |
+              select(
+                (.value.Repository == null) or
+                (.value.Repository | IN($allowed[]) | not)
+              ) |
+              "\(.key) (Repository: \(.value.Repository // "未定義"))"
+            ] | join("\n")' renv.lock)
+
+          if [ -n "$INVALID_REPO_PACKAGES" ]; then
+            echo "::error::以下のパッケージは許可されたリポジトリからインストールされていません:"
+            echo "$INVALID_REPO_PACKAGES" | while IFS= read -r line; do
+              echo "::error::  - $line"
+            done
+            echo ""
+            echo "::error::許可されたリポジトリ名: $ALLOWED_REPO_NAMES_JSON"
+            HAS_ERROR=1
+          fi
+
+          if [ "$HAS_ERROR" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "✅ All packages are installed from allowed repositories."
