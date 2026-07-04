@@ -114,7 +114,6 @@ jobs:
           #    c) Repository の値が Repositories の Name に存在しない
           #    d) Repository の値が Name に存在するが、対応する URL が許可プレフィックスでない
           # ---------------------------------------------------
-
           # 許可されたリポジトリ名一覧を取得
           # （Repositories 内で URL が許可プレフィックスで始まるもののみ）
           ALLOWED_REPO_NAMES_JSON=$(jq -c --arg prefix "$ALLOWED_PREFIX" \
@@ -131,6 +130,8 @@ jobs:
 
           echo "🔍 Validating $PKG_COUNT packages..."
 
+          HAS_ERROR=0
+
           # ---------------------------------------------------
           # 6-a. Source が "Repository" 以外のパッケージを検出
           #      （Local は Step5 で検出済みだが、GitHub 等もここで検出）
@@ -146,7 +147,7 @@ jobs:
             echo "$NON_REPO_PACKAGES" | while IFS= read -r line; do
               echo "::error::  - $line"
             done
-            exit 1
+            HAS_ERROR=1
           fi
 
           # ---------------------------------------------------
@@ -155,9 +156,10 @@ jobs:
           # ---------------------------------------------------
           INVALID_REPO_PACKAGES=$(jq -r --argjson allowed "$ALLOWED_REPO_NAMES_JSON" '
             [.Packages // {} | to_entries[] |
+              select(.value.Source == "Repository") |
               select(
                 (.value.Repository == null) or
-                ((.value.Repository as $repo) | ($allowed | index($repo)) == null)
+                (.value.Repository | IN($allowed[]) | not)
               ) |
               "\(.key) (Repository: \(.value.Repository // "未定義"))"
             ] | join("\n")' renv.lock)
@@ -169,9 +171,11 @@ jobs:
             done
             echo ""
             echo "::error::許可されたリポジトリ名: $ALLOWED_REPO_NAMES_JSON"
-            echo "::error::パッケージの Repository フィールドは上記の Name のいずれかである必要があります。"
+            HAS_ERROR=1
+          fi
+
+          if [ "$HAS_ERROR" -ne 0 ]; then
             exit 1
           fi
 
           echo "✅ All packages are installed from allowed repositories."
-          
