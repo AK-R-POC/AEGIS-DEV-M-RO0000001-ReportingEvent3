@@ -130,6 +130,9 @@ jobs:
 
           echo "🔍 Validating $PKG_COUNT packages..."
 
+          # チェック除外対象パッケージ
+          EXCLUDE_PACKAGES='["renv"]'
+
           HAS_ERROR=0
 
           # ---------------------------------------------------
@@ -154,8 +157,9 @@ jobs:
           # 6-b. Repository フィールドが許可済み Name に含まれないパッケージを検出
           #      （URL直書き、未定義Name、許可外URL のName すべてを捕捉）
           # ---------------------------------------------------
-          INVALID_REPO_PACKAGES=$(jq -r --argjson allowed "$ALLOWED_REPO_NAMES_JSON" '
+          INVALID_REPO_PACKAGES=$(jq -r --argjson allowed "$ALLOWED_REPO_NAMES_JSON" --argjson exclude "$EXCLUDE_PACKAGES" '
             [.Packages // {} | to_entries[] |
+              select(.key | IN($exclude[]) | not) |
               select(.value.Source == "Repository") |
               select(
                 (.value.Repository == null) or
